@@ -55,6 +55,8 @@ def main() -> None:
         "discovered_urls_fallback": 0,
         "fetched_pages": 0,
         "kept_articles": 0,
+        "fetched_musicweek_pages": 0,
+        "retained_musicweek_articles": 0,
         "skipped_by_reason": Counter(),
         "date_missing_count": 0,
     }
@@ -89,12 +91,14 @@ def main() -> None:
                 counters["skipped_by_reason"]["fetch_failed_or_robots_block"] += 1
                 continue
             counters["fetched_pages"] += 1
+            if source == "Music Week":
+                counters["fetched_musicweek_pages"] += 1
             if res.status_code >= 400 or not res.text:
                 counters["skipped_by_reason"]["http_error_or_empty"] += 1
                 continue
 
             md = extract_metadata(res.text)
-            ok, reason = is_article_page(md)
+            ok, reason = is_article_page(md, source=source, url=cu, http_status=res.status_code)
             if not ok:
                 counters["skipped_by_reason"][reason] += 1
                 continue
@@ -124,6 +128,8 @@ def main() -> None:
                     summary_en=summary,
                 )
             )
+            if source == "Music Week":
+                counters["retained_musicweek_articles"] += 1
 
     counters["kept_articles"] = len(parsed_articles)
 
@@ -173,6 +179,8 @@ def main() -> None:
     logging.info("discovered_urls_fallback=%s", counters["discovered_urls_fallback"])
     logging.info("fetched_pages=%s", counters["fetched_pages"])
     logging.info("kept_articles=%s", counters["kept_articles"])
+    logging.info("fetched_musicweek_pages=%s", counters["fetched_musicweek_pages"])
+    logging.info("retained_musicweek_articles=%s", counters["retained_musicweek_articles"])
     logging.info("skipped_by_reason=%s", counters["skipped_by_reason"])
     logging.info("date_missing_count=%s", counters["date_missing_count"])
 
