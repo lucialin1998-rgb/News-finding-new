@@ -134,7 +134,7 @@ def discover_fallback_urls(fetcher: WebFetcher, pages: int = 4) -> Dict[str, Set
 
     # Music Week listing fallback + pagination
     for page in range(1, pages + 1):
-        list_url = "https://www.musicweek.com/news" if page == 1 else f"https://www.musicweek.com/news/page/{page}/"
+        list_url = "https://www.musicweek.com/news" if page == 1 else f"https://www.musicweek.com/news?page={page}"
         res = fetcher.fetch(list_url)
         if not res or not res.text:
             continue
