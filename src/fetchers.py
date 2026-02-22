@@ -124,7 +124,6 @@ def discover_fallback_urls(fetcher: WebFetcher, pages: int = 4) -> Dict[str, Set
     # MBW RSS fallback
     feed_url = "https://www.musicbusinessworldwide.com/feed/"
     try:
-        if fetcher.robots.allowed(feed_url):
             feed = feedparser.parse(feed_url)
             for entry in feed.entries:
                 link = canonicalize_url(getattr(entry, "link", ""))
