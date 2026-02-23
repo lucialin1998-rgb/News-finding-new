@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Dict, List
 
-from src.fetchers import WebFetcher, discover_fallback_urls, discover_homepage_urls, fetch_mbw_rss_articles, filter_candidate_urls
+from src.fetchers import WebFetcher, discover_fallback_urls, discover_homepage_urls, filter_candidate_urls
 from src.insights import build_insights
 from src.nlp import extract_entities, load_spacy_model
 from src.parser import ParsedArticle, build_summary_from_title_excerpt, extract_metadata, is_article_page
@@ -43,7 +43,6 @@ def _article_to_dict(a: ParsedArticle) -> Dict:
 
 
 def main() -> None:
-    print("VERSION: MBW_RSS_ONLY_NO_FETCH + MUSICWEEK_STRICT_FORBIDDEN + CSV_HEADERS_ALWAYS")
     args = parse_args()
     setup_logging(args.verbose)
 
@@ -58,7 +57,6 @@ def main() -> None:
         "kept_articles": 0,
         "fetched_musicweek_pages": 0,
         "retained_musicweek_articles": 0,
-        "mbw_rss_entries": 0,
         "skipped_by_reason": Counter(),
         "date_missing_count": 0,
     }
@@ -67,102 +65,77 @@ def main() -> None:
 
     discovered_home = discover_homepage_urls(fetcher)
     discovered_fb = discover_fallback_urls(fetcher)
-
-    mbw_articles = fetch_mbw_rss_articles(args.days)
-    counters["mbw_rss_entries"] = len(mbw_articles)
-    logging.info("Processing Music Business Worldwide candidate URLs: %s", counters["mbw_rss_entries"])
-
     counters["discovered_urls_homepage"] = sum(len(v) for v in discovered_home.values())
-    counters["discovered_urls_fallback"] = sum(len(v) for v in discovered_fb.values()) + counters["mbw_rss_entries"]
+    counters["discovered_urls_fallback"] = sum(len(v) for v in discovered_fb.values())
+
+    all_candidates: Dict[str, List[str]] = {}
+    for source in ["Music Week", "Music Business Worldwide"]:
+        merged = set(discovered_home.get(source, set())) | set(discovered_fb.get(source, set()))
+        filtered = filter_candidate_urls(source, merged)
+        all_candidates[source] = filtered[: args.max_per_source]
 
     parsed_articles: List[ParsedArticle] = []
-
-    # MBW is RSS-only (no webpage fetch).
-    for item in mbw_articles:
-        summary = build_summary_from_title_excerpt(item.get("title_en", ""), item.get("excerpt_en", ""), bullets=2)
-        parsed_articles.append(
-            ParsedArticle(
-                source=item.get("source", "Music Business Worldwide"),
-                url=item.get("url", ""),
-                title=item.get("title_en", ""),
-                date=item.get("date", ""),
-                date_missing=bool(item.get("date_missing", False)),
-                excerpt_en=item.get("excerpt_en", ""),
-                summary_en=summary,
-            )
-        )
-        if item.get("date_missing", False):
-            counters["date_missing_count"] += 1
-
-    # Music Week webpage flow.
-    mw_candidates = filter_candidate_urls(
-        "Music Week",
-        set(discovered_home.get("Music Week", set())) | set(discovered_fb.get("Music Week", set())),
-    )[: args.max_per_source]
-
-    logging.info("MusicWeek discovered URLs: %s", len(mw_candidates))
-
     seen_urls = set()
-    for url in mw_candidates:
-        cu = canonicalize_url(url)
-        if cu in seen_urls:
-            counters["skipped_by_reason"]["duplicate_url"] += 1
-            continue
-        seen_urls.add(cu)
 
-        res = fetcher.fetch(cu, use_robots=True)
-        if not res:
-            counters["skipped_by_reason"]["fetch_failed_or_robots_block"] += 1
-            continue
+    for source, urls in all_candidates.items():
+        logging.info("Processing %s candidate URLs: %d", source, len(urls))
+        for url in urls:
+            cu = canonicalize_url(url)
+            if cu in seen_urls:
+                counters["skipped_by_reason"]["duplicate_url"] += 1
+                continue
+            seen_urls.add(cu)
 
-        counters["fetched_pages"] += 1
-        counters["fetched_musicweek_pages"] += 1
+            res = fetcher.fetch(cu)
+            if not res:
+                counters["skipped_by_reason"]["fetch_failed_or_robots_block"] += 1
+                continue
+            counters["fetched_pages"] += 1
+            if source == "Music Week":
+                counters["fetched_musicweek_pages"] += 1
+            if res.status_code >= 400 or not res.text:
+                counters["skipped_by_reason"]["http_error_or_empty"] += 1
+                continue
 
-        md = extract_metadata(res.text if res.text else "")
-        ok, reason, _matched_signals = is_article_page(
-            md,
-            source="Music Week",
-            url=cu,
-            http_status=res.status_code,
-            final_url=res.final_url,
-        )
-        if not ok:
-            counters["skipped_by_reason"][reason] += 1
-            continue
+            md = extract_metadata(res.text)
+            ok, reason = is_article_page(md, source=source, url=cu, http_status=res.status_code)
+            if not ok:
+                counters["skipped_by_reason"][reason] += 1
+                continue
 
-        title = (md.get("title") or "").strip()
-        excerpt = (md.get("excerpt") or "").strip()
-        pub_dt = md.get("published_dt")
-        if pub_dt is not None and pub_dt < cutoff:
-            counters["skipped_by_reason"]["older_than_window"] += 1
-            continue
+            title = (md.get("title") or "").strip()
+            excerpt = (md.get("excerpt") or "").strip()
+            pub_dt = md.get("published_dt")
+            if pub_dt is not None and pub_dt < cutoff:
+                counters["skipped_by_reason"]["older_than_window"] += 1
+                continue
 
-        date_str = pub_dt.date().isoformat() if pub_dt else ""
-        date_missing = pub_dt is None
-        if date_missing:
-            counters["date_missing_count"] += 1
+            date_str = pub_dt.date().isoformat() if pub_dt else ""
+            date_missing = pub_dt is None
+            if date_missing:
+                counters["date_missing_count"] += 1
 
-        summary = build_summary_from_title_excerpt(title, excerpt, bullets=2)
-        parsed_articles.append(
-            ParsedArticle(
-                source="Music Week",
-                url=cu,
-                title=title,
-                date=date_str,
-                date_missing=date_missing,
-                excerpt_en=excerpt,
-                summary_en=summary,
+            summary = build_summary_from_title_excerpt(title, excerpt, bullets=2)
+
+            parsed_articles.append(
+                ParsedArticle(
+                    source=source,
+                    url=cu,
+                    title=title,
+                    date=date_str,
+                    date_missing=date_missing,
+                    excerpt_en=excerpt,
+                    summary_en=summary,
+                )
             )
-        )
-        counters["retained_musicweek_articles"] += 1
+            if source == "Music Week":
+                counters["retained_musicweek_articles"] += 1
 
     counters["kept_articles"] = len(parsed_articles)
 
-    logging.info("MusicWeek fetched pages: %s", counters["fetched_musicweek_pages"])
-    logging.info("MusicWeek retained articles: %s", counters["retained_musicweek_articles"])
-    logging.info("MBW RSS entries: %s", counters["mbw_rss_entries"])
-
     translator = Translator(enabled=not args.no_translate)
+
+    # Translation (best effort)
     for article in parsed_articles:
         if not args.no_translate and translator.available:
             article.title_zh = translator.translate_text(article.title)
@@ -182,6 +155,7 @@ def main() -> None:
         for item in insights:
             item["insight_zh"] = translator.translate_text(item["insight_en"])
 
+    # Always produce output even if empty
     paths = save_csvs(outdir, run_date, article_dicts, entities, insights)
 
     counters["skipped_by_reason"] = sorted_counter_dict(dict(counters["skipped_by_reason"]))
@@ -205,9 +179,10 @@ def main() -> None:
     logging.info("discovered_urls_fallback=%s", counters["discovered_urls_fallback"])
     logging.info("fetched_pages=%s", counters["fetched_pages"])
     logging.info("kept_articles=%s", counters["kept_articles"])
+    logging.info("fetched_musicweek_pages=%s", counters["fetched_musicweek_pages"])
+    logging.info("retained_musicweek_articles=%s", counters["retained_musicweek_articles"])
     logging.info("skipped_by_reason=%s", counters["skipped_by_reason"])
-    logging.info("mbw_rss_entries=%s", counters["mbw_rss_entries"])
-    logging.info("Final kept_articles: %s", counters["kept_articles"])
+    logging.info("date_missing_count=%s", counters["date_missing_count"])
 
 
 if __name__ == "__main__":

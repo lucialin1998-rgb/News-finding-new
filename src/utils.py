@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import csv
 import hashlib
 import logging
 import os
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pytz
@@ -30,7 +29,16 @@ BLOCKLIST_TOKENS = {
 
 def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s | %(levelname)s | %(message)s")
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+    )
+
+
+def ensure_dir(path: str | Path) -> Path:
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def now_london() -> datetime:
@@ -73,6 +81,24 @@ def is_blocklisted_url(url: str) -> bool:
     return any(token in low for token in BLOCKLIST_TOKENS)
 
 
+def is_musicweek_article_like(url: str) -> bool:
+    parsed = urlparse(url)
+    if "musicweek.com" not in parsed.netloc.lower():
+        return True
+    path = parsed.path.lower().strip("/")
+    if path == "news":
+        return False
+    if "/news/" in f"/{path}/":
+        return True
+    # Generic article slug style fallback: has at least two path segments and digits or long slug
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2 and any(c.isdigit() for c in path):
+        return True
+    if len(parts) >= 2 and len(parts[-1]) >= 12:
+        return True
+    return False
+
+
 def file_age_hours(path: Path) -> Optional[float]:
     if not path.exists():
         return None
@@ -89,14 +115,12 @@ def load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.lower() in {"1", "true", "yes", "on"}
+
+
 def sorted_counter_dict(counter_dict: Dict[str, int]) -> Dict[str, int]:
     return dict(sorted(counter_dict.items(), key=lambda x: (-x[1], x[0])))
-
-
-def write_csv(path: Path, rows: List[Dict], fieldnames: List[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-    logging.info("Wrote CSV: %s (%d bytes)", path, path.stat().st_size)

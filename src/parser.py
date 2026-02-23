@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,16 +12,14 @@ from dateutil import parser as dtparser
 
 from .utils import LONDON_TZ, truncate_text
 
-ARTICLE_PATH_HINTS = ["/labels/read/", "/live/read/", "/media/read/", "/talent/read/", "/opinion/read/", "/news/"]
-FORBIDDEN_REDIRECT_HINTS = ["/account", "/login", "/subscribe", "/password"]
-STRONG_FORBIDDEN_SIGNALS = [
-    "reset my password",
-    "enter your email",
-    "sign in",
-    "subscribe to continue",
-    "create an account",
-    "forgotten password",
-    "register",
+FORBIDDEN_PAGE_TOKENS = ["login", "password", "reset", "subscribe", "newsletter"]
+MUSICWEEK_ARTICLE_PATH_HINTS = [
+    "/labels/read/",
+    "/live/read/",
+    "/media/read/",
+    "/talent/read/",
+    "/news/",
+    "/opinion/read/",
 ]
 
 
@@ -104,51 +101,44 @@ def extract_metadata(html: str) -> Dict[str, Any]:
         md = soup.find("meta", attrs={"name": "description"})
         if md and md.get("content"):
             excerpt = md["content"].strip()
+
     if not excerpt:
         container = soup.select_one("main") or soup.select_one("article") or soup
         p = container.find("p") if container else None
         if p:
             excerpt = p.get_text(" ", strip=True)
 
+    excerpt = truncate_text(excerpt, 300)
+    page_text = soup.get_text(" ", strip=True).lower()
+
     return {
         "title": title,
         "published_dt": parsed_date,
-        "excerpt": truncate_text(excerpt, 300),
-        "page_text": soup.get_text(" ", strip=True).lower(),
+        "date_raw_found": bool(date_candidates),
+        "excerpt": excerpt,
+        "page_text": page_text,
     }
 
 
-def is_article_page(
-    metadata: Dict[str, Any],
-    source: str,
-    url: str,
-    http_status: int,
-    final_url: str = "",
-) -> Tuple[bool, str, List[str]]:
+def is_article_page(metadata: Dict[str, Any], source: str, url: str, http_status: int) -> Tuple[bool, str]:
     if http_status != 200:
-        return False, "http_status_not_200", []
+        return False, "http_status_not_200"
 
-    path = urlparse(url).path.lower()
-    if not any(seg in path for seg in ARTICLE_PATH_HINTS):
-        return False, "non_article_path", []
+    low_title = (metadata.get("title") or "").lower()
+    low_page_text = metadata.get("page_text", "")
+    if any(token in low_title or token in low_page_text for token in FORBIDDEN_PAGE_TOKENS):
+        return False, "forbidden_page_tokens"
 
-    final_low = (final_url or url).lower()
-    if any(sig in final_low for sig in FORBIDDEN_REDIRECT_HINTS):
-        return False, "forbidden_redirect_path", [sig for sig in FORBIDDEN_REDIRECT_HINTS if sig in final_low]
+    if source == "Music Week":
+        path = urlparse(url).path.lower()
+        if not any(seg in path for seg in MUSICWEEK_ARTICLE_PATH_HINTS):
+            return False, "musicweek_non_article_path"
+        return True, "ok"
 
-    page_text = (metadata.get("page_text") or "")
-    matched_signals = [sig for sig in STRONG_FORBIDDEN_SIGNALS if sig in page_text]
-    if len(matched_signals) >= 2:
-        logging.debug(
-            "Forbidden page skip | url=%s | final_url=%s | title=%s | matched_signals=%s",
-            url,
-            final_url or url,
-            metadata.get("title", ""),
-            matched_signals,
-        )
-        return False, "forbidden_page_tokens", matched_signals
-
-    return True, "ok", []
+    has_date = metadata.get("published_dt") is not None or metadata.get("date_raw_found")
+    if not has_date:
+        return False, "missing_article_date_signals"
+    return True, "ok"
 
 
 def split_sentences(text: str) -> List[str]:
