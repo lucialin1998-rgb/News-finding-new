@@ -13,7 +13,14 @@ from dateutil import parser as dtparser
 from .utils import LONDON_TZ, truncate_text
 
 FORBIDDEN_PAGE_TOKENS = ["login", "password", "reset", "subscribe", "newsletter"]
-ARTICLE_PATH_HINTS = ["/labels/read/", "/live/read/", "/media/read/", "/talent/read/", "/opinion/read/", "/news/"]
+MUSICWEEK_ARTICLE_PATH_HINTS = [
+    "/labels/read/",
+    "/live/read/",
+    "/media/read/",
+    "/talent/read/",
+    "/news/",
+    "/opinion/read/",
+]
 
 
 @dataclass
@@ -94,18 +101,22 @@ def extract_metadata(html: str) -> Dict[str, Any]:
         md = soup.find("meta", attrs={"name": "description"})
         if md and md.get("content"):
             excerpt = md["content"].strip()
+
     if not excerpt:
         container = soup.select_one("main") or soup.select_one("article") or soup
         p = container.find("p") if container else None
         if p:
             excerpt = p.get_text(" ", strip=True)
 
+    excerpt = truncate_text(excerpt, 300)
+    page_text = soup.get_text(" ", strip=True).lower()
+
     return {
         "title": title,
         "published_dt": parsed_date,
         "date_raw_found": bool(date_candidates),
-        "excerpt": truncate_text(excerpt, 300),
-        "page_text": soup.get_text(" ", strip=True).lower(),
+        "excerpt": excerpt,
+        "page_text": page_text,
     }
 
 
@@ -113,15 +124,20 @@ def is_article_page(metadata: Dict[str, Any], source: str, url: str, http_status
     if http_status != 200:
         return False, "http_status_not_200"
 
-    path = urlparse(url).path.lower()
-    if not any(seg in path for seg in ARTICLE_PATH_HINTS):
-        return False, "non_article_path"
-
     low_title = (metadata.get("title") or "").lower()
-    low_page_text = (metadata.get("page_text") or "")
+    low_page_text = metadata.get("page_text", "")
     if any(token in low_title or token in low_page_text for token in FORBIDDEN_PAGE_TOKENS):
         return False, "forbidden_page_tokens"
 
+    if source == "Music Week":
+        path = urlparse(url).path.lower()
+        if not any(seg in path for seg in MUSICWEEK_ARTICLE_PATH_HINTS):
+            return False, "musicweek_non_article_path"
+        return True, "ok"
+
+    has_date = metadata.get("published_dt") is not None or metadata.get("date_raw_found")
+    if not has_date:
+        return False, "missing_article_date_signals"
     return True, "ok"
 
 

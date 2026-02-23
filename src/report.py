@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
-from .utils import write_csv
+import pandas as pd
 
 
 def save_csvs(outdir: Path, run_date: str, articles: List[Dict], entities: List[Dict], insights: List[Dict]) -> Dict[str, Path]:
@@ -13,14 +14,9 @@ def save_csvs(outdir: Path, run_date: str, articles: List[Dict], entities: List[
         "entities": outdir / f"entities_{run_date}.csv",
         "insights": outdir / f"insights_{run_date}.csv",
     }
-
-    write_csv(
-        paths["articles"],
-        articles,
-        ["source", "date", "date_missing", "title_en", "title_zh", "url", "excerpt_en", "excerpt_zh", "summary_en", "summary_zh"],
-    )
-    write_csv(paths["entities"], entities, ["entity_en", "entity_zh", "category", "count"])
-    write_csv(paths["insights"], insights, ["insight_en", "insight_zh", "supporting_articles"])
+    pd.DataFrame(articles).to_csv(paths["articles"], index=False, encoding="utf-8-sig")
+    pd.DataFrame(entities).to_csv(paths["entities"], index=False, encoding="utf-8-sig")
+    pd.DataFrame(insights).to_csv(paths["insights"], index=False, encoding="utf-8-sig")
     return paths
 
 
@@ -50,16 +46,9 @@ def render_markdown_report(
     lines.append(f"- discovered_urls_fallback: {counters.get('discovered_urls_fallback', 0)}")
     lines.append(f"- fetched_pages: {counters.get('fetched_pages', 0)}")
     lines.append(f"- kept_articles: {counters.get('kept_articles', 0)}")
+    lines.append(f"- date_missing_count: {counters.get('date_missing_count', 0)}")
     lines.append(f"- skipped_by_reason: {counters.get('skipped_by_reason', {})}")
-    lines.append(f"- mbw_rss_entries: {counters.get('mbw_rss_entries', 0)}")
     lines.append("")
-
-    if counters.get("kept_articles", 0) == 0:
-        lines.append("## Why no articles were retained")
-        lines.append("No articles were retained after discovery and filtering.")
-        lines.append("Common causes include robots blocking homepage fetches, unavailable pagination (404), and strict URL/content filters.")
-        lines.append("See skipped_by_reason and source-specific counters in logs for details.")
-        lines.append("")
 
     lines.append("## Industry Insights (EN)")
     for row in insights:
