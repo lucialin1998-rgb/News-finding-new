@@ -12,7 +12,15 @@ from dateutil import parser as dtparser
 
 from .utils import LONDON_TZ, truncate_text
 
-ARTICLE_PATH_HINTS = ["/read/", "/news/"]
+FORBIDDEN_PAGE_TOKENS = ["login", "password", "reset", "subscribe", "newsletter"]
+MUSICWEEK_ARTICLE_PATH_HINTS = [
+    "/labels/read/",
+    "/live/read/",
+    "/media/read/",
+    "/talent/read/",
+    "/news/",
+    "/opinion/read/",
+]
 
 
 @dataclass
@@ -60,12 +68,6 @@ def _safe_parse_dt(value: str) -> Optional[datetime]:
         return None
 
 
-def _visible_text(soup: BeautifulSoup) -> str:
-    for tag in soup(["script", "style", "noscript"]):
-        tag.extract()
-    return soup.get_text(" ", strip=True)
-
-
 def extract_metadata(html: str) -> Dict[str, Any]:
     soup = BeautifulSoup(html, "lxml")
 
@@ -102,45 +104,41 @@ def extract_metadata(html: str) -> Dict[str, Any]:
 
     if not excerpt:
         container = soup.select_one("main") or soup.select_one("article") or soup
-        ps = [p.get_text(" ", strip=True) for p in container.find_all("p")[:2]] if container else []
-        ps = [p for p in ps if p]
-        if ps:
-            excerpt = " ".join(ps)
-
-    if not excerpt:
-        excerpt = _visible_text(soup)[:300]
+        p = container.find("p") if container else None
+        if p:
+            excerpt = p.get_text(" ", strip=True)
 
     excerpt = truncate_text(excerpt, 300)
-    visible = _visible_text(soup)
+    page_text = soup.get_text(" ", strip=True).lower()
 
     return {
         "title": title,
         "published_dt": parsed_date,
+        "date_raw_found": bool(date_candidates),
         "excerpt": excerpt,
-        "page_text": visible.lower(),
-        "body_length": len(visible),
+        "page_text": page_text,
     }
 
 
-def is_article_page(
-    metadata: Dict[str, Any],
-    source: str,
-    url: str,
-    http_status: int,
-    final_url: str = "",
-) -> Tuple[bool, str, List[str]]:
+def is_article_page(metadata: Dict[str, Any], source: str, url: str, http_status: int) -> Tuple[bool, str]:
     if http_status != 200:
-        return False, "http_status_not_200", []
+        return False, "http_status_not_200"
 
-    # Emergency bypass for Music Week forbidden token filtering.
+    low_title = (metadata.get("title") or "").lower()
+    low_page_text = metadata.get("page_text", "")
+    if any(token in low_title or token in low_page_text for token in FORBIDDEN_PAGE_TOKENS):
+        return False, "forbidden_page_tokens"
+
     if source == "Music Week":
         path = urlparse(url).path.lower()
-        body_length = int(metadata.get("body_length") or 0)
-        if body_length > 1000 and any(seg in path for seg in ARTICLE_PATH_HINTS):
-            return True, "ok", []
-        return False, "musicweek_not_article_like", []
+        if not any(seg in path for seg in MUSICWEEK_ARTICLE_PATH_HINTS):
+            return False, "musicweek_non_article_path"
+        return True, "ok"
 
-    return True, "ok", []
+    has_date = metadata.get("published_dt") is not None or metadata.get("date_raw_found")
+    if not has_date:
+        return False, "missing_article_date_signals"
+    return True, "ok"
 
 
 def split_sentences(text: str) -> List[str]:
